@@ -1,0 +1,249 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>My English Vocabulary</title>
+  <style>
+    :root { font-family: system-ui, -apple-system, sans-serif; color: #18243a; background: #f2f5fa; }
+    body { max-width: 720px; margin: 0 auto; padding: 20px 14px 50px; }
+    h1 { text-align: center; color: #264a91; }
+    h2 { margin-top: 0; font-size: 1.2rem; }
+    .panel { background: white; padding: 20px; margin: 16px 0; border-radius: 14px; box-shadow: 0 2px 12px #152b4a12; }
+    input[type="text"], select { box-sizing: border-box; width: 100%; padding: 12px; margin: 6px 0 12px; border: 1px solid #bcc9da; border-radius: 8px; font-size: 16px; }
+    button, .file-label { display: inline-block; cursor: pointer; padding: 10px 14px; margin: 4px 4px 4px 0; border: 0; border-radius: 8px; background: #2855a4; color: white; font-size: 15px; }
+    button:hover, .file-label:hover { background: #183b7a; }
+    button:disabled { opacity: .45; cursor: not-allowed; }
+    button.secondary { background: #e9effa; color: #183b7a; }
+    button.danger { background: #a43143; }
+    button.success { background: #237551; }
+    .card { min-height: 185px; display: flex; flex-direction: column; align-items: center; justify-content: center; background: #edf3ff; border-radius: 12px; padding: 15px; text-align: center; overflow-wrap: anywhere; }
+    #cardWord { font-size: clamp(25px, 7vw, 36px); font-weight: 750; }
+    #cardMeaning { font-size: 21px; margin-top: 16px; }
+    .controls { text-align: center; padding-top: 12px; }
+    .meta, .hint { color: #596579; font-size: 14px; }
+    ul { list-style: none; padding: 0; }
+    li { padding: 12px 0; border-bottom: 1px solid #e1e6ee; overflow-wrap: anywhere; }
+    .entry-title { font-weight: 650; }
+    .pill { display: inline-block; padding: 3px 8px; border-radius: 999px; background: #fcebd5; color: #774e13; font-size: 12px; margin-left: 6px; }
+    .pill.learned { background: #d8f4e6; color: #17603f; }
+    #restoreFile { display: none; }
+  </style>
+</head>
+<body>
+  <h1>My English Vocabulary</h1>
+  <section class="panel">
+    <h2>① 単語を追加</h2>
+    <form id="wordForm">
+      <label for="english">英単語</label>
+      <input id="english" type="text" placeholder="例: achieve" required>
+      <label for="japanese">日本語訳</label>
+      <input id="japanese" type="text" placeholder="例: 達成する" required>
+      <button type="submit">単語を登録</button>
+    </form>
+  </section>
+
+  <section class="panel">
+    <h2>② 暗記カード</h2>
+    <label for="filter">出題する単語</label>
+    <select id="filter">
+      <option value="all">すべて</option>
+      <option value="unlearned">覚えていない単語のみ</option>
+      <option value="learned">覚えた単語のみ</option>
+    </select>
+    <p class="meta" id="counter"></p>
+    <div class="card">
+      <div id="cardWord"></div>
+      <div id="cardMeaning"></div>
+    </div>
+    <div class="controls">
+      <button type="button" id="showButton">答えを見る</button>
+      <button type="button" id="nextButton">ランダムに次の単語</button>
+    </div>
+    <div class="controls">
+      <button type="button" class="success" id="learnButton">覚えた ✓</button>
+      <button type="button" class="danger" id="unlearnButton">まだ覚えていない</button>
+    </div>
+    <p class="hint">出題はランダムです。同じ単語が連続しないようにしています（候補が2語以上の場合）。</p>
+  </section>
+
+  <section class="panel">
+    <h2>③ 単語一覧</h2>
+    <p id="total" class="meta"></p>
+    <ul id="wordList"></ul>
+  </section>
+
+  <section class="panel">
+    <h2>④ バックアップ・復元</h2>
+    <button type="button" id="backupButton">バックアップを保存（JSON）</button>
+    <label for="restoreFile" class="file-label">バックアップから復元</label>
+    <input type="file" id="restoreFile" accept=".json,application/json">
+    <p class="hint">復元すると現在の単語帳はバックアップの内容に置き換わります。先にバックアップを保存してください。</p>
+    <p id="message" role="status" aria-live="polite" class="meta"></p>
+  </section>
+
+  <script>
+    "use strict";
+    const storageKey = "myVocabularyWords"; // 前のバージョンと同じ保存先
+    const $ = id => document.getElementById(id);
+
+    function normalize(raw) {
+      if (!Array.isArray(raw)) throw new Error("単語データが配列ではありません。");
+      return raw.map((w, i) => {
+        if (!w || typeof w.english !== "string" || typeof w.japanese !== "string" ||
+            !w.english.trim() || !w.japanese.trim()) {
+          throw new Error((i + 1) + "番目の単語データが不正です。");
+        }
+        return { english: w.english.trim(), japanese: w.japanese.trim(), learned: w.learned === true };
+      });
+    }
+
+    let words = [];
+    try {
+      words = normalize(JSON.parse(localStorage.getItem(storageKey) || "[]"));
+    } catch (e) {
+      alert("保存済みデータを読み込めませんでした。既存データは上書きせず、この画面では空の単語帳を表示します。\n" + e.message);
+    }
+    let currentIndex = -1;
+    let showMeaning = false;
+    let storageEnabled = true;
+    try { localStorage.setItem("__vocab_test__", "1"); localStorage.removeItem("__vocab_test__"); }
+    catch (e) { storageEnabled = false; alert("ブラウザ内に保存できません。データのバックアップ機能を利用してください。"); }
+
+    function saveWords() {
+      try {
+        localStorage.setItem(storageKey, JSON.stringify(words));
+        return true;
+      } catch (e) {
+        alert("自動保存できませんでした。バックアップファイルを保存してください。\n" + e.message);
+        return false;
+      }
+    }
+    function matchingIndices() {
+      const filter = $("filter").value;
+      return words.map((_, i) => i).filter(i => filter === "all" ||
+        (filter === "learned" ? words[i].learned : !words[i].learned));
+    }
+    function nextRandom() {
+      const candidates = matchingIndices();
+      if (candidates.length === 0) { currentIndex = -1; }
+      else {
+        const choices = candidates.length > 1 ? candidates.filter(i => i !== currentIndex) : candidates;
+        currentIndex = choices[Math.floor(Math.random() * choices.length)];
+      }
+      showMeaning = false;
+      render();
+    }
+    function renderCard() {
+      const candidates = matchingIndices();
+      if (!candidates.includes(currentIndex)) currentIndex = -1;
+      if (currentIndex === -1 && candidates.length) currentIndex = candidates[Math.floor(Math.random() * candidates.length)];
+      const active = currentIndex !== -1;
+      $("cardWord").textContent = active ? words[currentIndex].english : "該当する単語がありません";
+      $("cardMeaning").textContent = active ? (showMeaning ? words[currentIndex].japanese : "？？？") : "";
+      $("counter").textContent = "出題対象 " + candidates.length + " 語" + (active ? (words[currentIndex].learned ? "｜覚えた" : "｜未習得") : "");
+      $("showButton").textContent = showMeaning ? "答えを隠す" : "答えを見る";
+      for (const id of ["showButton", "nextButton", "learnButton", "unlearnButton"]) $(id).disabled = !active;
+    }
+    function renderList() {
+      const list = $("wordList");
+      list.replaceChildren();
+      $("total").textContent = "全 " + words.length + " 語 ／ 覚えた " + words.filter(w => w.learned).length + " 語 ／ 未習得 " + words.filter(w => !w.learned).length + " 語";
+      for (const [index, w] of words.entries()) {
+        const li = document.createElement("li");
+        const title = document.createElement("div");
+        title.className = "entry-title";
+        title.textContent = w.english + " — " + w.japanese;
+        const status = document.createElement("span");
+        status.className = "pill" + (w.learned ? " learned" : "");
+        status.textContent = w.learned ? "覚えた" : "未習得";
+        title.appendChild(status);
+        const edit = document.createElement("button");
+        edit.className = "secondary";
+        edit.textContent = "編集";
+        edit.addEventListener("click", () => editWord(index));
+        const remove = document.createElement("button");
+        remove.className = "danger";
+        remove.textContent = "削除";
+        remove.addEventListener("click", () => deleteWord(index));
+        li.append(title, edit, remove);
+        list.appendChild(li);
+      }
+    }
+    function render() { renderCard(); renderList(); }
+
+    $("wordForm").addEventListener("submit", event => {
+      event.preventDefault();
+      const english = $("english").value.trim();
+      const japanese = $("japanese").value.trim();
+      if (!english || !japanese) return;
+      words.push({ english, japanese, learned: false });
+      saveWords();
+      event.target.reset();
+      render();
+    });
+    $("filter").addEventListener("change", () => { currentIndex = -1; nextRandom(); });
+    $("nextButton").addEventListener("click", nextRandom);
+    $("showButton").addEventListener("click", () => { showMeaning = !showMeaning; renderCard(); });
+    function markLearned(value) {
+      if (currentIndex === -1) return;
+      words[currentIndex].learned = value;
+      saveWords();
+      // 「未習得のみ」などで対象外になったら、次の単語へ移動
+      if (!matchingIndices().includes(currentIndex)) nextRandom();
+      else render();
+    }
+    $("learnButton").addEventListener("click", () => markLearned(true));
+    $("unlearnButton").addEventListener("click", () => markLearned(false));
+    function editWord(index) {
+      const english = prompt("英単語を編集", words[index].english);
+      if (english === null) return;
+      const japanese = prompt("日本語訳を編集", words[index].japanese);
+      if (japanese === null) return;
+      if (!english.trim() || !japanese.trim()) { alert("空欄にはできません。"); return; }
+      words[index].english = english.trim();
+      words[index].japanese = japanese.trim();
+      saveWords(); render();
+    }
+    function deleteWord(index) {
+      if (!confirm("この単語を削除しますか？")) return;
+      words.splice(index, 1);
+      currentIndex = -1;
+      showMeaning = false;
+      saveWords(); render();
+    }
+    $("backupButton").addEventListener("click", () => {
+      const data = { version: 1, exportedAt: new Date().toISOString(), words };
+      const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = "vocabulary-backup-" + new Date().toISOString().slice(0, 10) + ".json";
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      $("message").textContent = "バックアップファイルの保存を開始しました。";
+    });
+    $("restoreFile").addEventListener("change", async event => {
+      const file = event.target.files[0];
+      if (!file) return;
+      try {
+        if (file.size > 5 * 1024 * 1024) throw new Error("5MBを超えるファイルは読み込めません。");
+        const parsed = JSON.parse(await file.text());
+        const imported = normalize(Array.isArray(parsed) ? parsed : parsed.words);
+        if (!confirm("現在の " + words.length + " 語をバックアップの " + imported.length + " 語で置き換えます。よろしいですか？")) return;
+        words = imported;
+        currentIndex = -1;
+        showMeaning = false;
+        saveWords();
+        render();
+        $("message").textContent = imported.length + " 語を復元しました。";
+      } catch (e) {
+        $("message").textContent = "復元できませんでした: " + e.message;
+      } finally { event.target.value = ""; }
+    });
+    render();
+  </script>
+</body>
+</html>
